@@ -1,0 +1,55 @@
+\documentclass[UKenglish]{uiomasterthesis}  %% ... or norsk or nynorsk or USenglish
+\usepackage[T1]{url}\urlstyle{sf}
+\usepackage{babel, csquotes, graphicx, textcomp, uiomasterfp, varioref}
+\usepackage[backend=biber,style=numeric-comp]{biblatex}
+\usepackage[hidelinks, hypertexnames=false]{hyperref}
+
+\title{Testbench System for CMOS-Image Sensor}        %% ... or whatever
+\subtitle{Any short subtitle}         %% ... if any
+\author{Fredrik G. Kleven}                      %% ... or whoever 
+
+\addbibresource{mybib.bib}            %% ... or whatever
+
+\begin{document}
+\uiomasterfp[dept={Department of Physics},  %% ... or your department
+  program={Electronics, Informatics and Technology},                        %% ... or your study program
+  supervisor={Philipp Häfliger},               %% ... or blank
+  % or supervisors={A Name\and B Name},     %% if more than one
+  long]                                     %% ... or short
+
+\frontmatter{}
+\begin{abstract}
+  Here come 3--6 sentences of \LaTeX{}\cite{LaTeX-original} code
+  describing your thesis.
+\end{abstract}
+
+\begin{xabstract}[Sammendrag]               %% ... or Abstract or ...
+  Here comes the abstract in a different language.
+\end{xabstract}
+
+\tableofcontents{}                          %%
+\listoffigures{}                            %% (omit if none)
+\listoftables{}                             %% (omit if none)
+
+\begin{preface}
+  Here comes your preface, including acknowledgments and thanks.
+\end{preface}
+
+\mainmatter{}
+\part{Introduction}                   %% ... Innledning or Innleiing
+\chapter{Introduction}
+\input{chapters/introduction}
+
+
+\chapter{Background}                  %% ... or Bakgrunn
+\section{Xxx's work}                  %% ... or whatever
+
+\part{The project}                    %% ... or ??
+\chapter{Planning the project}        %% ... or ??
+
+\part{Conclusion}                     %% ... or ??
+\chapter{Results}                     %% ... or ??
+
+\backmatter{}
+\printbibliography{}
+\end{document}

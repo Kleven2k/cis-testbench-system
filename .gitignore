@@ -1,0 +1,50 @@
+# Vivado build artifacts
+*.cache/
+*.gen/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+.Xil/
+
+# Vivado logs and journals
+vivado.jou
+vivado.log
+vivado_*.backup.jou
+vivado_*.backup.log
+ip_upgrade.log
+
+# Vivado srcs - keep IP config (.xci), ignore generated/build artifacts
+cis_testbench_system.srcs/utils_1/
+
+# ModelSim compiled libraries (generated, not source)
+sim/modelsim/unisim/
+sim/modelsim/unifast/
+sim/modelsim/unimacro/
+sim/modelsim/work/
+sim/modelsim/vsim.wlf
+sim/modelsim/transcript
+sim/modelsim/*.cr.mti
+
+# Python virtual environment
+cis_venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# LaTeX build artifacts
+thesis/*.aux
+thesis/*.bbl
+thesis/*.bcf
+thesis/*.blg
+thesis/*.fdb_latexmk
+thesis/*.fls
+thesis/*.lof
+thesis/*.log
+thesis/*.lot
+thesis/*.out
+thesis/*.run.xml
+thesis/*.synctex.gz
+thesis/*.toc
+thesis/_minted*/
