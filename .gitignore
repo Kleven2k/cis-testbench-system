@@ -26,6 +26,16 @@ sim/modelsim/vsim.wlf
 sim/modelsim/transcript
 sim/modelsim/*.cr.mti
 
+# cocotb build artifacts
+sim/cocotb/**/sim_build/
+sim/cocotb/**/__pycache__/
+sim/cocotb/**/*.vcd
+sim/cocotb/**/*.fst
+sim/cocotb/**/results.xml
+
+# Timestamped build output from scripts/build.tcl
+runs/
+
 # Python virtual environment
 cis_venv/
 

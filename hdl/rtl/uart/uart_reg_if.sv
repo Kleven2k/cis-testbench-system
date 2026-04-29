@@ -37,6 +37,17 @@ module uart_reg_if (
     logic [7:0] data_reg;
     logic       is_read;
 
+    // tx_busy_d: 1-cycle delayed tx_busy.
+    // tx_done: fires only on the falling edge of tx_busy (or first time in S_TX_HDR).
+    // This prevents the next TX state from firing in the same cycle that uart_tx
+    // first asserts tx_busy, which would cause it to miss the tx_start pulse.
+    logic tx_busy_d;
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst) tx_busy_d <= 1'b0;
+        else     tx_busy_d <= tx_busy;
+    end
+    wire tx_done = !tx_busy && (tx_busy_d || state == S_TX_HDR);
+
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
             state    <= S_IDLE;
@@ -99,28 +110,28 @@ module uart_reg_if (
                 // TX SECTION (Read Response)
                 // ------------------------------------------------
                 S_TX_HDR:
-                    if (!tx_busy) begin
+                    if (tx_done) begin
                         tx_data  <= 8'hCC;
                         tx_start <= 1;
                         state    <= S_TX_ADDR;
                     end
 
                 S_TX_ADDR:
-                    if (!tx_busy) begin
+                    if (tx_done) begin
                         tx_data  <= addr_reg;
                         tx_start <= 1;
                         state    <= S_TX_DATA;
                     end
 
                 S_TX_DATA:
-                    if (!tx_busy) begin
+                    if (tx_done) begin
                         tx_data  <= read_data;
                         tx_start <= 1;
                         state    <= S_TX_FOOTER;
                     end
 
                 S_TX_FOOTER:
-                    if (!tx_busy) begin
+                    if (tx_done) begin
                         tx_data  <= 8'h55;
                         tx_start <= 1;
                         state    <= S_IDLE;

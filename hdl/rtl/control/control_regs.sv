@@ -31,6 +31,9 @@ module control_regs (
     output      logic [7:0]  cds_delay_us,
     output      logic        read_mode,
     output      logic        cds_enable,
+    output      logic        photosense_mode,
+    output      logic [1:0]  disp_gain,
+    output      logic        invert_pol,    // REG_MODE[4]: 1 = higher ADC → brighter
     output      logic        start_pulse,
     output      logic        soft_reset
 );
@@ -58,6 +61,7 @@ module control_regs (
             integer i;
             for (i = 0; i < 8; i = i + 1)
                 regfile[i] <= 8'd0;
+            regfile[5] <= 8'h02;  // photosense_mode = 1 by default (bit 1)
         end else begin
             if (uart_write_en) begin
                 // Always allow writing CTRL (needed to enable remote mode)
@@ -134,6 +138,10 @@ module control_regs (
             read_mode  = sw_read_mode;
             cds_enable = sw_cds_enable;
         end
+        // display config always comes from register (no physical switch)
+        photosense_mode = regfile[5][1];
+        disp_gain       = regfile[5][3:2];
+        invert_pol      = regfile[5][4];
     end
 
     // ============================================================

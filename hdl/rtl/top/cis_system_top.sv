@@ -2,7 +2,9 @@
 `timescale 1ns/1ps
 
 module cis_system_top #(
-    parameter CORDW = 12
+    parameter CORDW     = 12,
+    parameter GRID_COLS = 8,   // sensor columns  — change here for a different sensor
+    parameter GRID_ROWS = 8    // sensor rows
 )(
     //-------------------------------------------------------------------------
     // Clock and Reset
@@ -214,14 +216,24 @@ module cis_system_top #(
     //logic [15:0] cds_delay_time_cfg = 16'd10;  // default
 
     // draw voltages
-    simple_pixel #(.CORDW(CORDW), .H_RES(H_RES)) simple_pixel_inst (
+    simple_pixel #(
+        .CORDW    (CORDW),
+        .H_RES    (H_RES),
+        .GRID_COLS(GRID_COLS),
+        .GRID_ROWS(GRID_ROWS)
+    ) simple_pixel_inst (
         .clk_pix(clk_pix),
         .sx(sx),
         .sy(sy),
         .pixel_mem(pixel_mem),
+        .frame_min(frame_min_reg),
+        .frame_max(frame_max_reg),
         .volt_sensor(sensor_out_sync),
         .volt_temp(temp_out_sync),
         .delay_time(exposure_us),
+        .photosense_mode(photosense_mode_final),
+        .invert_pol(invert_pol_final),
+        .disp_gain(disp_gain_final),
         .gray_out(gray_pix)
     );
 
@@ -308,18 +320,52 @@ module cis_system_top #(
     //-------------------------------------------------------------------------
     // Pixels
     //-------------------------------------------------------------------------
-    logic [11:0] pixel_mem [0:63];
+    localparam int PIXEL_COUNT = GRID_COLS * GRID_ROWS;
+
+    logic [11:0] pixel_mem     [0:PIXEL_COUNT-1]; // written in clk_pix domain
+    logic [11:0] pixel_mem_100m[0:PIXEL_COUNT-1]; // copy in clk_100m domain for UART
+
+    // sensor_ctrl asserts pixel_step while pixel_index still points at the
+    // pixel whose dwell just completed, so write the sample into that slot
+    // directly.  The older "index-1" scheme shifts photo samples into the
+    // preceding ISFET entries when photosense_mode skips checkerboard sites.
+    logic [5:0] pixel_write_idx;
+    always_comb begin
+        pixel_write_idx = pixel_index;
+    end
 
     always_ff @(posedge clk_pix or negedge btn_rst_n) begin
         if (!btn_rst_n) begin
             integer i;
-            for (i = 0; i < 64; i = i + 1)
+            for (i = 0; i < PIXEL_COUNT; i = i + 1)
                 pixel_mem[i] <= 12'd0;
         end else begin
             // Write exactly one sample at end of each dwell
             if (readout_state && pixel_step) begin
-                pixel_mem[pixel_index] <= sensor_out_sync;
+                pixel_mem[pixel_write_idx] <= sensor_out_sync;
             end
+        end
+    end
+
+    // Latch entire frame into clk_100m domain when scan completes (done pulse)
+    // done is a single-cycle pulse in clk_pix domain — safe to use as a trigger
+    // since pixel_mem is stable immediately after done
+    logic done_100m_0, done_100m_1;
+    always_ff @(posedge clk_100m) begin
+        done_100m_0 <= done;
+        done_100m_1 <= done_100m_0;
+    end
+    wire frame_latch = done_100m_0 & ~done_100m_1;  // rising edge in 100m domain
+
+    always_ff @(posedge clk_100m or negedge btn_rst_n) begin
+        if (!btn_rst_n) begin
+            integer i;
+            for (i = 0; i < PIXEL_COUNT; i = i + 1)
+                pixel_mem_100m[i] <= 12'd0;
+        end else if (frame_latch) begin
+            integer i;
+            for (i = 0; i < PIXEL_COUNT; i = i + 1)
+                pixel_mem_100m[i] <= pixel_mem[i];
         end
     end
 
@@ -348,16 +394,62 @@ module cis_system_top #(
 
     logic read_mode_final;
     logic cds_final;
+    logic photosense_mode_final;
+    logic [1:0] disp_gain_final;
+    logic        invert_pol_final;
     logic start_combined;
     logic rst_uart;
 
-    sensor_ctrl u_sensor_ctrl (
+    // 2-FF CDC: photosense_mode_final (clk_100m) → clk_pix domain
+    logic photosense_sync0, photosense_sync1;
+    always_ff @(posedge clk_pix) begin
+        photosense_sync0 <= photosense_mode_final;
+        photosense_sync1 <= photosense_sync0;
+    end
+
+    // -------------------------------------------------------------------------
+    // Auto-range: compute min/max over all active pixels after each scan.
+    // In photosense_mode blanked pixels (row+col even) are excluded so ISFETs
+    // don't distort the range reference.
+    // Combinational reduction over pixel_mem — latched on the done pulse.
+    // -------------------------------------------------------------------------
+    logic [11:0] frame_min_comb, frame_max_comb;
+    always_comb begin
+        frame_min_comb = 12'hFFF;
+        frame_max_comb = 12'h000;
+        for (int i = 0; i < PIXEL_COUNT; i++) begin
+            automatic int r = i / GRID_COLS;
+            automatic int c = i % GRID_COLS;
+            // Exclude blanked positions when photosense is active
+            if (!(photosense_sync1 && ((r + c) % 2 == 0))) begin
+                if (pixel_mem[i] < frame_min_comb) frame_min_comb = pixel_mem[i];
+                if (pixel_mem[i] > frame_max_comb) frame_max_comb = pixel_mem[i];
+            end
+        end
+    end
+
+    logic [11:0] frame_min_reg, frame_max_reg;
+    always_ff @(posedge clk_pix or negedge btn_rst_n) begin
+        if (!btn_rst_n) begin
+            frame_min_reg <= 12'h000;
+            frame_max_reg <= 12'hFFF;
+        end else if (done) begin
+            frame_min_reg <= frame_min_comb;
+            frame_max_reg <= frame_max_comb;
+        end
+    end
+
+    sensor_ctrl #(
+        .GRID_COLS(GRID_COLS),
+        .GRID_ROWS(GRID_ROWS)
+    ) u_sensor_ctrl (
         .clk  (clk_pix),
         .rst  (!btn_rst_n | rst_uart),
 
         .start(start_combined),
         .read_mode (read_mode_final),
         .cds_enable(cds_final),
+        .photosense_mode(photosense_sync1),
 
         .delay_time      (exposure_us),
         .cds_delay_us    (cds_delay_us_wire),
@@ -448,7 +540,33 @@ module cis_system_top #(
     logic [7:0]  uart_write_data;
 
     logic [7:0]  uart_read_addr;
-    logic [7:0]  uart_read_data;
+    logic [7:0]  uart_read_data;       // muxed: goes into uart_reg_if
+    logic [7:0]  ctrl_read_data;       // from control_regs only
+
+    // -------------------------------------------------------------------------
+    // Read data mux: addresses 0x00-0x07 → control registers
+    //                addresses 0x08-0x87 → pixel_mem (64 pixels × 2 bytes each)
+    //   pixel i hi byte: addr = 0x08 + i*2     → {4'b0, pixel_mem[i][11:8]}
+    //   pixel i lo byte: addr = 0x09 + i*2     → pixel_mem[i][7:0]
+    // -------------------------------------------------------------------------
+    // Pixel address range: 0x08 .. 0x08 + PIXEL_COUNT*2 - 1
+    //   even offset = high nibble {4'b0, pixel[11:8]}
+    //   odd  offset = low byte    pixel[7:0]
+    localparam int PIXEL_ADDR_LO  = 8'h08;
+    localparam int PIXEL_ADDR_HI  = PIXEL_ADDR_LO + PIXEL_COUNT * 2 - 1;
+
+    logic [5:0] pix_rd_idx;
+    assign pix_rd_idx = (uart_read_addr - 8'(PIXEL_ADDR_LO)) >> 1;
+
+    always_comb begin
+        if (uart_read_addr >= 8'(PIXEL_ADDR_LO) && uart_read_addr <= 8'(PIXEL_ADDR_HI)) begin
+            if (uart_read_addr[0] == 1'b0)
+                uart_read_data = {4'b0, pixel_mem_100m[pix_rd_idx][11:8]};
+            else
+                uart_read_data = pixel_mem_100m[pix_rd_idx][7:0];
+        end else
+            uart_read_data = ctrl_read_data;
+    end
 
     uart_reg_if u_uart_if (
         .clk(clk_100m),
@@ -491,16 +609,19 @@ module cis_system_top #(
         .uart_data(uart_write_data),
 
         .read_addr(uart_read_addr),
-        .read_data(uart_read_data),
+        .read_data(ctrl_read_data),
 
         .exposure_us (exposure_us),
         .dwell_us    (pixel_dwell_us),
         .reset_us    (reset_us_wire),
         .cds_delay_us(cds_delay_us_wire),
         .read_mode   (read_mode_final),
-        .cds_enable(cds_final),
-        .start_pulse(start_combined),
-        .soft_reset(rst_uart)
+        .cds_enable  (cds_final),
+        .photosense_mode(photosense_mode_final),
+        .disp_gain   (disp_gain_final),
+        .invert_pol  (invert_pol_final),
+        .start_pulse (start_combined),
+        .soft_reset  (rst_uart)
     );
 
 endmodule
