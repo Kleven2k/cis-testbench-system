@@ -1,0 +1,186 @@
+% =========================================================
+% Chapter 5 — FPGA Design and Implementation
+% =========================================================
+
+\section{Sensor Control FSM}
+
+The sensor readout sequence is implemented as a finite state machine (FSM) in VHDL (\texttt{sensor\_ctrl.vhd}). The FSM operates on the 74.25~MHz pixel clock and drives the four sensor control signals: \texttt{nRES}, \texttt{nTX}, \texttt{AX[2:0]}, and \texttt{AY[2:0]}.
+
+The FSM has six states:
+
+\begin{description}
+  \item[IDLE] Waits for a start command. All control outputs are deasserted and all counters are held at zero.
+
+  \item[RESET] Asserts both \texttt{nRES} and \texttt{nTX} low for the configured \texttt{reset\_us} duration, discharging all pixel storage nodes to a known state. The timing parameters for the subsequent integration and readout phases are latched on the transition out of this state so that mid-scan register changes do not corrupt a frame in progress.
+
+  \item[CDS] An optional window inserted after reset and before integration. When correlated double sampling is enabled (\texttt{cds\_enable = 1}), the ADC may sample the reset level of each pixel during this period. The window duration is controlled by \texttt{cds\_delay\_us}. If CDS is disabled the FSM transitions directly from RESET to INTEGRATE.
+
+  \item[INTEGRATE] Deasserts \texttt{nTX}, opening the transfer gate and allowing photocurrent to accumulate on the pixel storage node. The duration is controlled by \texttt{exposure\_us} (1--65535~$\mu$s).
+
+  \item[READOUT] Scans all active pixels sequentially by stepping through \texttt{AX[2:0]} (column) and \texttt{AY[2:0]} (row). The number of pixels scanned is determined at runtime by the \texttt{active\_cols} and \texttt{active\_rows} registers, allowing the same bitstream to serve sensors with different array sizes up to the compiled maximum. At each address the FSM waits for \texttt{dwell\_us} microseconds to allow the column bus to settle, then pulses \texttt{pixel\_step} to trigger an ADC capture. The result is written into the pixel frame buffer. When \texttt{photosense\_mode} is active, pixels at positions where column~+~row is even are skipped without a dwell delay, reducing the total readout time and avoiding contamination from non-photodiode pixels. After the last active pixel the FSM asserts \texttt{done} and returns to RESET to begin the next frame.
+
+  \item[SINGLE\_PIXEL] Holds \texttt{AX} and \texttt{AY} at a fixed address supplied by the host over UART. The ADC samples the same pixel continuously, useful for characterising a single pixel's response to varying illumination or timing parameters. This mode is only available in remote mode; no switch is provided for it in local operation.
+\end{description}
+
+All timing parameters are expressed in microseconds and converted to clock cycles using the constant \texttt{CYCLES\_PER\_US = 74} (derived from the 74.25~MHz clock, truncated). The parameters are latched from the register file when the FSM leaves the RESET state, ensuring that a consistent set of values is used throughout a single frame.
+
+% TODO: insert FSM state diagram figure
+% TODO: insert timing diagram showing one full readout cycle (nRES, nTX, AX/AY, ADC sample)
+
+
+\section{Register File and Control Interface}
+
+The register file (\texttt{control\_regs.sv}) contains ten 8-bit registers that configure all timing parameters, operating modes, and the runtime grid dimensions. Table~\ref{tab:regmap} lists the complete register map.
+
+\begin{table}[h]
+\centering
+\caption{UART register map.}
+\label{tab:regmap}
+\begin{tabular}{llp{7cm}}
+\hline
+\textbf{Address} & \textbf{Name} & \textbf{Description} \\
+\hline
+\texttt{0x00} & CTRL        & \texttt{[7]} remote\_mode, \texttt{[2]} cds\_enable,
+                               \texttt{[1]} soft\_reset, \texttt{[0]} start \\
+\texttt{0x01} & EXP\_LO     & Exposure time, low byte ($\mu$s) \\
+\texttt{0x02} & EXP\_HI     & Exposure time, high byte ($\mu$s) \\
+\texttt{0x03} & DWELL\_LO   & Pixel dwell time, low byte ($\mu$s) \\
+\texttt{0x04} & DWELL\_HI   & Pixel dwell time, high byte ($\mu$s) \\
+\texttt{0x05} & MODE        & \texttt{[4]} invert\_pol, \texttt{[3:2]} disp\_gain,
+                               \texttt{[1]} photosense\_mode, \texttt{[0]} read\_mode \\
+\texttt{0x06} & RESET\_US   & Reset hold duration ($\mu$s) \\
+\texttt{0x07} & CDS\_DELAY  & CDS window duration ($\mu$s) \\
+\texttt{0x08} & ACTIVE\_COLS & Runtime grid width in columns (1--64, default 8) \\
+\texttt{0x09} & ACTIVE\_ROWS & Runtime grid height in rows (1--64, default 8) \\
+\hline
+\end{tabular}
+\end{table}
+
+Pixel data is read back over UART starting at address \texttt{0x0A}. Each pixel occupies two consecutive addresses: the high nibble of the 12-bit ADC result at the even address and the low byte at the odd address. For a grid of $C \times R$ pixels, addresses \texttt{0x0A} through \texttt{0x0A + $C \times R \times$ 2 - 1} are used.
+
+The system supports two control modes, selected by bit~7 of the CTRL register (\texttt{remote\_mode}). Table~\ref{tab:local_switches} lists the switch assignments in local mode.
+
+\begin{table}[h]
+\centering
+\caption{Switch assignments in local (non-remote) mode.}
+\label{tab:local_switches}
+\begin{tabular}{lll}
+\hline
+\textbf{Switch} & \textbf{Function} & \textbf{Notes} \\
+\hline
+\texttt{SW[0]} & CDS enable        & Enables correlated double sampling \\
+\texttt{SW[1]} & Photosense mode   & Skips alternate (non-photodiode) pixels \\
+\texttt{SW[2]} & Invert polarity   & Higher ADC value = brighter display \\
+\hline
+\end{tabular}
+\end{table}
+
+In local mode, the push-buttons adjust exposure and dwell time in steps of 10~$\mu$s, and the three switches above control the most commonly needed flags without requiring a PC. Single-pixel mode and pixel address selection are only available in remote mode, as they are less frequently needed during routine characterisation. The grid dimensions (\texttt{ACTIVE\_COLS}, \texttt{ACTIVE\_ROWS}) are written automatically by the host software when a connection is established, and persist in the register file until the next reset or remote write.
+
+In remote mode, the register file is fully authoritative and all physical inputs are ignored. Remote mode is entered by writing to register \texttt{0x00}, which is the only register writable regardless of the current mode.
+
+\section{Runtime Grid Configurability}
+
+The testbench is designed to support pixel arrays of different sizes without requiring a bitstream rebuild for each sensor. The FPGA is compiled with a maximum array size defined by the \texttt{GRID\_COLS} and \texttt{GRID\_ROWS} parameters in \texttt{cis\_system\_top.sv} (default $16 \times 16$). The pixel frame buffer and UART address map are sized to this maximum at compile time.
+
+At runtime, the host software writes the actual sensor dimensions into registers \texttt{ACTIVE\_COLS} (0x08) and \texttt{ACTIVE\_ROWS} (0x09) immediately after connecting. The sensor FSM reads these values and limits its pixel counter accordingly, scanning only the active area and asserting \texttt{done} after the last active pixel. The checkerboard skip computation for photosense mode also uses \texttt{active\_cols} so that the alternate-pixel pattern remains correct for any grid width.
+
+To characterise a sensor larger than the compiled maximum, or to use an address bus wider than 3~bits, a new bitstream must be built with updated parameters. For the common case of testing different sensors within the same size class, no rebuild is required.
+
+
+\section{XADC Integration}
+
+The Xilinx XADC Wizard IP core is configured to sample two channels: VAUX0 carries the sensor pixel output and VAUX1 monitors the on-chip temperature. The core operates on the 100~MHz system clock and returns 16-bit words, of which the 12 most significant bits carry the conversion result (bits [15:4])~\cite{ug480}.
+
+Sampling is triggered by the sensor FSM during the READOUT state. After each pixel address is set, the FSM waits for \texttt{dwell\_us} microseconds before capturing the XADC output. This dwell time must be long enough for the analog multiplexer capacitance to settle to the selected pixel voltage. Empirically, a dwell time of 100~$\mu$s was found to be sufficient for the sensor under test.
+
+Because the XADC runs on the 100~MHz system clock and the pixel frame buffer is written and read on the 74.25~MHz pixel clock, the two domains are asynchronous and a clock domain crossing (CDC) is required.
+
+\section{Clock Generation}
+
+The 74.25~MHz pixel clock and the 371.25~MHz serialiser clock are derived from the 100~MHz board oscillator using a Xilinx \texttt{MMCME2\_BASE} mixed-mode clock manager~\cite{ug472}. The VCO is configured to run at 742.5~MHz (100~MHz $\times$ 37.125 / 5), from which two output dividers produce the two required frequencies: divide by~2 for 371.25~MHz and divide by~10 for 74.25~MHz. Both outputs are placed on the global clock network via \texttt{BUFG} primitives to ensure low skew across the device. The \texttt{LOCKED} signal is synchronised to the pixel clock domain through a two-stage register before being used as a reset release.
+
+\section{Clock Domain Crossing}
+
+The \texttt{cdc\_adc\_sync} module transfers 12-bit XADC results from the 100~MHz domain to the 74.25~MHz pixel clock domain using a toggle-based handshake~\cite{cummings2001}. When a new XADC result is available, the source domain flips a single-bit toggle signal. This toggle is passed through a three-stage synchroniser clocked by the destination domain:
+
+\begin{enumerate}
+  \item The first flip-flop may go metastable but has a full clock period
+    to resolve.
+  \item The second flip-flop samples the resolved output.
+  \item The third flip-flop provides a one-cycle-delayed copy for edge
+    detection: a transition on the synchronised toggle indicates that new
+    data has arrived.
+\end{enumerate}
+
+Only after a clean edge is detected is the 12-bit data word captured into the destination domain. Synchronising a single bit rather than the full data bus avoids the race condition that arises when individual bits of a multi-bit bus cross in different clock cycles~\cite{cummings2001}. A three-stage synchroniser (rather than the conventional two) was used because the clock ratio of approximately 1.35 provides reduced metastability margin compared with ratios further from unity.
+
+The 12-bit data word itself never crosses the clock boundary directly. Instead it is registered in the source domain as soon as \texttt{data\_valid} is asserted, and held stable there until the destination domain captures it on the detected toggle edge. This ensures the data is fully settled before it is sampled.
+
+The CDC introduces a latency of two to three \texttt{clk\_dst} cycles (approximately 27--40~ns) between a valid XADC result and its appearance in the pixel frame buffer. This is negligible in practice because the sensor dwell timer holds each pixel address for at least 100~$\mu$s --- more than three orders of magnitude longer than the synchroniser latency.
+
+\section{Pixel Frame Buffer}
+
+A \texttt{PIXEL\_COUNT}-element array of 12-bit values (\texttt{pixel\_mem[0:PIXEL\_COUNT-1]}) stores the most recently completed frame. \texttt{PIXEL\_COUNT} equals \texttt{GRID\_COLS~$\times$~GRID\_ROWS} and is fixed at compile time to the maximum supported array size. During READOUT the FSM writes each captured ADC value at index \texttt{AY~$\times$~active\_cols~+~AX}. Only the first \texttt{active\_cols~$\times$~active\_rows} entries are populated per scan; the remainder retain their previous values. The display renderer reads the active portion of the array continuously on every video frame.
+
+\section{HDMI Display Chain}
+
+The display pipeline produces a 720p60 video signal (1280$\times$720 at 60~Hz, 74.25~MHz pixel clock) from the pixel frame buffer. It consists of three stages.
+
+\subsection{Sync Generator}
+
+The \texttt{simple\_720p} module generates 720p60 horizontal and vertical sync pulses conforming to the CEA-861 standard, a data-enable flag (\texttt{de}), and pixel coordinates $(s_x, s_y)$ at 74.25~MHz. The active area spans
+$s_x \in [0, 1279]$ and $s_y \in [0, 719]$; coordinates outside this range correspond to blanking intervals.
+
+\subsection{Pixel Renderer}
+
+The \texttt{simple\_pixel} module maps the \texttt{GRID\_COLS}$\times$\texttt{GRID\_ROWS} \texttt{pixel\_mem} array onto a centred box covering two thirds of the screen (approximately 853$\times$480 pixels). Each sensor pixel occupies an equal rectangular cell whose dimensions are computed by dividing the box width and height by the number of columns and rows respectively. The column and row of each screen pixel are derived by integer division of the screen-relative coordinates by the cell dimensions, making the renderer fully parametric. Within each cell the upper portion displays a greyscale fill and the bottom strip shows an intensity bar whose width is proportional to the pixel brightness.
+
+Brightness is computed using per-frame auto-ranging: \texttt{frame\_min} and \texttt{frame\_max} are updated once per completed scan and represent the darkest and brightest pixel values in the last frame. The deviation of each pixel from the dark end of the range is scaled to a 4-bit greyscale value by right-shifting by the position of the most significant bit of \texttt{frame\_range = frame\_max - frame\_min}. An additional \texttt{disp\_gain} parameter (0--3) applies a further left-shift to boost contrast when the scene has low dynamic range.
+
+The \texttt{invert\_pol} flag selects the polarity convention: \texttt{invert\_pol = 0} (default) maps a lower ADC value to a brighter display pixel, which matches sensors where more light reduces the output voltage; \texttt{invert\_pol = 1} maps a higher ADC value to brighter, matching standard CMOS sensors where more light increases the output voltage. This makes the renderer sensor-agnostic.
+
+\subsection{TMDS Encoder and Serialiser}
+
+The \texttt{dvi\_generator} module encodes the 8-bit greyscale value (replicated across all three colour channels to produce a greyscale image) into TMDS symbols as defined by the DVI~1.0 specification~\cite{dvi10}. Each 8-bit value is encoded in two stages: transition minimisation reduces the number of signal edges on the wire, and DC balancing uses a running disparity counter to ensure the long-term average of ones and zeros remains equal. The result is a 10-bit symbol per channel per pixel clock cycle.
+
+The 10-bit symbols are serialised at 10$\times$ the pixel clock rate (741.5~Mbit/s per channel) using pairs of Xilinx \texttt{OSERDESE2} primitives in DDR mode~\cite{ug471}, clocked by the 371.25~MHz clock. Each serialised stream is driven onto a differential output pair by an \texttt{OBUFDS} primitive. Four pairs are used in total: three data channels (blue, green, red) and one clock channel.
+
+
+\section{OLED Display}
+
+A small SPI OLED display on the Nexys Video board provides a status readout without requiring an HDMI monitor or PC connection. The \texttt{OLED\_master} module, operating on the 100~MHz system clock, displays four rows of information: the current exposure time, the pixel dwell time, the active FSM state name, and the CDS and remote mode flags. The display redraws whenever any of these values change, without introducing a fixed update delay.
+
+\section{Host Software}
+
+A Python application (\texttt{scripts/cis\_control.py}) provides a graphical interface for controlling the testbench remotely. The application uses \texttt{pyserial} for UART communication and \texttt{tkinter} for the GUI.
+
+Before connecting, the user sets the sensor grid dimensions (columns, rows) in the Sensor Config panel. When the connection is established the application automatically writes \texttt{ACTIVE\_COLS} and \texttt{ACTIVE\_ROWS} to the FPGA register file and rebuilds the pixel canvas to match. No manual intervention is required to reconfigure the system for a different sensor array size.
+
+All ten timing and mode registers can be written from the GUI. Dedicated buttons trigger a scan, assert soft reset, and toggle remote mode. The application can also read back register values to confirm that writes were received correctly. Table~\ref{tab:gui_controls} summarises the GUI controls and the registers they write.
+
+\begin{table}[h]
+\centering
+\caption{Python GUI controls and corresponding registers.}
+\label{tab:gui_controls}
+\begin{tabular}{ll}
+\hline
+\textbf{Control} & \textbf{Register(s) written} \\
+\hline
+Grid columns (on connect)  & \texttt{0x08} ACTIVE\_COLS \\
+Grid rows (on connect)     & \texttt{0x09} ACTIVE\_ROWS \\
+Exposure time ($\mu$s)     & \texttt{0x01}, \texttt{0x02} \\
+Dwell time ($\mu$s)        & \texttt{0x03}, \texttt{0x04} \\
+Reset hold ($\mu$s)        & \texttt{0x06} \\
+CDS delay ($\mu$s)         & \texttt{0x07} \\
+CDS enable                 & \texttt{0x00} bit[2] \\
+Read mode (single pixel)   & \texttt{0x05} bit[0] \\
+Photosense mode            & \texttt{0x05} bit[1] \\
+Display gain               & \texttt{0x05} bits[3:2] \\
+Invert polarity            & \texttt{0x05} bit[4] \\
+Remote mode toggle         & \texttt{0x00} bit[7] \\
+Start scan                 & \texttt{0x00} bit[0] \\
+Soft reset                 & \texttt{0x00} bit[1] \\
+\hline
+\end{tabular}
+\end{table}

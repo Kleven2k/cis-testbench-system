@@ -1,0 +1,81 @@
+% ===========================================
+% Chapter 3 - Hardware
+% ===========================================
+
+\section{Platform Selection}
+
+The Digilent Nexys Video development board was selected as the hardware platform for this test-bench system. The board is using a Xilinx Artix-7 FPGA (xc7a200tsbg484-1) and was chosen for several reasons. It includes a native HDMI output driven by TMDS-capable I/O banks, an on-chip ADC with accessible differential analog input pins, PMOD expansion headers for sensor interfacing, and a USB-UART bridge for PC communication.
+Using a commercial development board avoids the time and risk associated with custom PCB design and makes the system straightforward to reproduce by future students.
+
+\section{The CIS Chip Under Test}
+The sensor used for validation is an 8$\times$8 pixel prototype CIS chip developed within the Nanoelectronics group at the University of Oslo. The chip exposes a digital control interface consisting of four signals: \texttt{nRES} (active-low reset), \texttt{nTX} (active-low integration enable), and two 3-bit address buses (\texttt{AX[2:0]}, \texttt{AY[2:0]}) for column and row selection during readout. The analog pixel output is a single-ended voltage that varies with the light intensity integrated during the exposure period. The output voltage range is compatible with the XADC input range of 0--1~V differential.
+
+% TODO: add specific chip name, process node, pixel pitch if available
+
+\section{Physical Connections}
+
+\subsection{Sensor Interface --- PMOD JA}
+
+The digital control signals are routed from the FPGA to the sensor through the PMOD~JA header. Table~\ref{tab:pmod_ja} lists the pin assignments.
+
+\begin{table}[htpb]
+\centering
+\caption{PMOD JA pin assignments for sensor control signals.}
+\label{tab:pmod_ja}
+\begin{tabular}{lll}
+\hline
+\textbf{PMOD Pin} & \textbf{Signal} & \textbf{Direction} \\
+\hline
+JA1  & \texttt{AY[0]} & Output \\
+JA2  & \texttt{AY[1]} & Output \\
+JA3  & \texttt{AY[2]} & Output \\
+JA4  & \texttt{nTX}   & Output \\
+JA7  & \texttt{AX[0]} & Output \\
+JA8  & \texttt{AX[1]} & Output \\
+JA9  & \texttt{AX[2]} & Output \\
+JA10 & \texttt{nRES}  & Output \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Analog Input --- XADC}
+
+The sensor analog output is connected to the XADC VAUX0 differential input pair on the FPGA. The positive input carries the sensor signal and the negative input is tied to the analog ground reference. A second channel, VAUX1, is reserved for an on-chip temperature monitor. The XADC produces 12-bit results at up to 1~MSPS; in the design the sampling rate is governed by the sensor dwell timer, which holds each pixel address long enough for the ADC to settle and complete a conversion.
+
+\subsection{User Interface --- Buttons and Switches}
+
+Five push-buttons on the Nexys Video board provide local control without requiring a PC connection. Table~\ref{tab:buttons} lists their functions. Two slide switches elect the operating mode: \texttt{SW0} selects between full-frame and single-pixel readout, and \texttt{SW[6:2]} select the pixel address used in single-pixel mode.
+
+\begin{table}[htbp]
+\centering
+\caption{Push-button assignments.}
+\label{tab:buttons}
+\begin{tabular}{lll}
+\hline
+\textbf{Button} & \textbf{FPGA Pin} & \textbf{Function} \\
+\hline
+BTNC & B22 & Start scan \\
+BTNU & D22 & Increase exposure time \\
+BTNL & C22 & Decrease exposure time \\
+BTNR & D14 & Increase dwell time \\
+BTND & F15 & Decrease dwell time \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{HDMI Output}
+
+The processed image is displayed on an external monitor via the HDMI
+connector on the Nexys Video board. Four differential TMDS pairs carry
+the encoded video signal at 720p60 resolution (1280$\times$720 at 60~Hz,
+74.25~MHz pixel clock).
+
+\subsection{UART}
+
+A USB-UART bridge on the Nexys Video board provides serial communication
+with the host PC. The interface operates at 115200~baud, 8N1. This allows
+all sensor timing parameters to be configured remotely from the Python
+host application, and enables automated test scripts to control the sensor
+without any physical interaction with the board.
+
+% TODO: insert hardware connection figure (sensor chip <-> PMOD <-> FPGA <-> HDMI + PC)

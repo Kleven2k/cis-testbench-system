@@ -1,0 +1,66 @@
+% =========================================================
+% Chapter 8 — Discussion
+% =========================================================
+
+\section{Achievement of Project Goals}
+
+The original project goal was to create a flexible, reusable testbench platform that future sutdents in the Nanoelectronics group could use to characterise new CIS chips without rebuilding the infrastructure from scratch. The implemented system fulfils the core requirements: it drives the sensor control interface with configurable timing, acquires pixel data via the XADC, displays results in  real time over HDMI, and allows full remote control from a PC over UART.
+
+Beyond the initial requirements, the system was extended during development to improve generality. Runtime grid configurability was added so that the same bitstream can be used for sensors with different array sizes up to the compiled maximum, without requiring a Vivado rebuild for each new chip. The Python GUI was redesigned to configure the grid dimensions on connect and adapt the pixel canvas automatically. The HDMI display renderer was made fully parametric and the switch mapping was rationalised to expose the most frequently needed controls - CDS enable, photosense mode, and polarity - directly on  hardware without requiring a PC.
+
+% TODO: compare against the original project specification point by point once the specification document is available.
+
+\section{Limitations}
+
+\subsection{ADC Resolution and Quality}
+
+The Xilinx XADC provides 12-bit resolution at up to 1~MSPS. While sufficient for initial characterisation, the XADC is a general-purpose on-chip converter and has known limitations in linearity and noise flood compared to dedicated external ADCs. The effective number of bits (ENOB) is typically 10-11 bits in practice~\cite{ug480}. For precise characterization of low-noise sensors, this may mask sensor-level noise that a better ADC would resolve.
+
+\subsection{Pixel Array Size}
+
+The maximum supported array size is fixed at compile time by the \texttt{GRID\_COLS} and \texttt{GRID\_ROWS} parameters. The address buses (\texttt{AX[2:0]}, \texttt{AY[2:0]}) are 3 bits wide, limiting the maximum addressable grid to 8 columns and 8 rows with the current constraints file. Supporting larger arrays would require widening the address buses and rebuilding the bitstream. The HDMI display renderer supports up to 16x16 at 720p resolution before cell sizes become to small to be useful.
+
+\subsection{Single-Ended Analog Input}
+
+The sensor analog output is connected to the XADC as a single-ended signal referenced to analog ground. A differential input would provide better common-mode noise rejection, which is important when the sensor and FPGA share a noisy supply. This limitation is inherent to the direct PMOD connection and could be addressed with a small analog front-end circuit on a custom adapter PCB.
+
+\subsection{Fixed-Pattern Noise}
+
+The experimental results revealed a residual fixed-pattern noise of approximately 10~mV across photodiode pixels, persisting even at long dwell times. This is attributed to process variation in the pixel reset transistors of the sensor chip itself and cannot be corrected in firmware~\cite{nakamura2005}. Software-side dark frame subtraction is available in the Python GUI but does not address the underlying cause.
+
+\subsection{No Optical Path}
+
+The system has no provision for a controlled optical path. Light exposure during measurements was uncontrolled, relying on ambient illumination or covering the sensor by hand. Quantitative characterization - quantum efficiency, linearity, dynamic range - requires a calibrated light source and mechanical fixture following a standardized measurement methodology~\cite{emva1288}, neither of which was implemented.
+
+\section{Design Decisions}
+
+\subsection{FPGA Platform Choice}
+
+The Nexys Video board was chosen over a custom PCB to reduce development time and risk. The board provides all required interfaces - HDMI, XADC, PMOD, UART - in a proven package. The tradeoff is that the board is larger and more expensive that a purpose-built solution, but for a university testbench used by a small number of students this is acceptable. A custom PCB would be appropriate if the system were to be deployed at scale. 
+
+\subsection{Mixed-Language RTL}
+
+The sensor control FSM was implemented in VHDL while the surrounding system was written in SystemVerilog. This reflected the history of the project - the FSM predated the decision to use SystemVerilog for the rest of the design. Mixed-language synthesis is supported by Vivado but introduces complexity in simulation, requiring two simulators (ModelSim for VHDL, ICarus Verilog for SystemVerilog). A cleaner approach for future revision would be to rewrite the FSM in SystemVerilog to unify the toolchain.
+
+\subsection{Verification Strategy}
+
+The decision to use cocotb for unit testing was motivated by the speed of writing Python test code compared to VHDL or SystemVerilog testbenches. The tradeoff is that cocotb with Icarus Verilog does not simulate Xilinx primitives, so system-level integration could only be confirmed through hardware bring-up. For a production design, formal verification or Xilinx simulation models would provide stronger guarantees. For a university testbench, the combination of unit simulation and hardware bring-up was sufficient.
+
+\subsection{Timing Closure}
+
+Achieving timing closure required three significant redesigns during implementation. The oLED digit conversion was initially implemented using integer division, which synthesised to large carry chains and violated timing by 133~ns. The pixel min/max reduction was initially combinatorial over the full frame buffer, causing a similar problem. The HDMI pixel renderer required a two-stage pipeline to break the long combinatorial path from screen coordinates to output colour. These issues highlight the importance of considering synthesis implications when writing RTL - constructs that simulate correctly can still fail timing if they produce deep logic cones.
+
+\section{Reusability for Future Students}
+
+A key goal of this proect was to produce a system that future students can adapt for a new sensor with minimal effort. The following changes would be required to connect a different sensor:
+
+\begin{enumerate}
+    \item \textbf{PMOD pin assignment}: update the XDC constraints file to map the new sensor's control signals to the correct PMOD pins.
+    \item \textbf{Grid dimensions}: set \texttt{GRID\_COLS} and \texttt{GRID\_ROWS} in \texttt{cis\_system\_top.sv} to the maximum array size of the new sensor and rebuild the bistream. At runtime, the Python GUI writes the active scan dimensions to the register file on connect.
+    \item \textbf{Sensor FSM}: if the new sensor uses a different readout protocol - for example, a rolling shutter or a column-parallel architecture - the \texttt{sensor\_ctrl} FSM would need to be modified. The surrounding infrastructure (UART, XADC, display, Python GUI) would remain unchanged.
+    \item \textbf{Polarity}: set \texttt{invert\_pol} to match the sensor's output convention. This can be done from the Python GUI without a bitstream rebuild.
+\end{enumerate}
+
+A custom adapter PCB with a sstandardised connector would further reduce the effort of switching between sensors, eliminating the need to re-wire the PMOD header for each chip. This is identified as the highest-priority future improvement.
+
+% TODO: once experimental results are complete, add a paragraph here discussing what the measurements revealed about the sensor and what that implies for future characterisation work.
