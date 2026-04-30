@@ -20,6 +20,10 @@ entity sensor_ctrl is
         cds_enable       : in std_logic;
         photosense_mode  : in std_logic;             -- 1 = skip alternate pixels in READOUT
 
+        -- Runtime grid size (must be <= GRID_COLS/GRID_ROWS)
+        active_cols      : in integer range 1 to 64;
+        active_rows      : in integer range 1 to 64;
+
         done           : out std_logic;
         exposure_done  : out std_logic;
         cds_done       : out std_logic;
@@ -80,16 +84,21 @@ architecture arch of sensor_ctrl is
     signal exposure_limit_latched        : integer := 0;
     signal pixel_dwell_latched           : integer := 0;
 
-    -- Alternate-pixel detection: pixel is "type A" when (col + row) is even.
-    -- For an 8-column grid col = pixel_counter mod 8 = bits [2:0],
-    -- row = pixel_counter / 8 = bits [5:3].  LSBs equal → even sum.
-    signal pixel_slv : unsigned(5 downto 0);
-    signal skip_pos  : std_logic;  -- '1' when current pixel should be skipped
+    -- Runtime pixel count derived from active_cols/active_rows inputs.
+    signal active_pixel_count : integer range 1 to PIXEL_COUNT;
+
+    -- Alternate-pixel detection using runtime active_cols.
+    signal skip_col  : integer range 0 to GRID_COLS - 1;
+    signal skip_row  : integer range 0 to GRID_ROWS - 1;
+    signal skip_pos  : std_logic;
 
 begin
 
-    pixel_slv <= to_unsigned(pixel_counter, 6);
-    skip_pos  <= '1' when (pixel_slv(0) = pixel_slv(3)) else '0';
+    active_pixel_count <= active_cols * active_rows;
+
+    skip_col <= pixel_counter mod active_cols;
+    skip_row <= pixel_counter / active_cols;
+    skip_pos <= '1' when ((skip_col + skip_row) mod 2 = 0) else '0';
 
     cds_limit_cycles   <= to_integer(cds_delay_us) * CYCLES_PER_US;
     reset_limit_cycles <= to_integer(reset_us)     * CYCLES_PER_US;
@@ -209,10 +218,9 @@ begin
                     exposure_done_reg <= '0';
                     pixel_step_reg    <= '0';
 
-                    -- When photosense_mode is active, skip alternate pixels
-                    -- (those where col+row is even) to read only one pixel type.
+                    -- When photosense_mode is active, skip alternate pixels.
                     if photosense_mode = '1' and skip_pos = '1' then
-                        if pixel_counter < PIXEL_COUNT - 1 then
+                        if pixel_counter < active_pixel_count - 1 then
                             pixel_counter <= pixel_counter + 1;
                         else
                             pixel_counter <= 0;
@@ -220,8 +228,8 @@ begin
                         end if;
                         pixel_dwell_counter <= 0;
                     else
-                        ax_reg <= std_logic_vector(to_unsigned(pixel_counter mod GRID_COLS, 3));
-                        ay_reg <= std_logic_vector(to_unsigned(pixel_counter / GRID_COLS, 3));
+                        ax_reg <= std_logic_vector(to_unsigned(pixel_counter mod active_cols, 3));
+                        ay_reg <= std_logic_vector(to_unsigned(pixel_counter / active_cols, 3));
 
                         if pixel_dwell_counter < pixel_dwell_latched - 1 then
                             pixel_dwell_counter <= pixel_dwell_counter + 1;
@@ -229,7 +237,7 @@ begin
                             pixel_dwell_counter <= 0;
                             pixel_step_reg      <= '1';
 
-                            if pixel_counter < PIXEL_COUNT - 1 then
+                            if pixel_counter < active_pixel_count - 1 then
                                 pixel_counter <= pixel_counter + 1;
                             else
                                 pixel_counter <= 0;
@@ -258,34 +266,58 @@ begin
 
     process(state, start, cds_done_reg, cds_enable,
             exposure_done_reg, single_done_reg, done_reg,
-            read_mode, reset_counter)
+            read_mode, reset_counter, reset_limit_cycles)
     begin
         case state is
             when IDLE =>
-                next_state <= RESET when start = '1' else IDLE;
+                if start = '1' then
+                    next_state <= RESET;
+                else
+                    next_state <= IDLE;
+                end if;
 
             when RESET =>
                 if reset_counter = reset_limit_cycles then
-                    next_state <= CDS when cds_enable = '1' else INTEGRATE;
+                    if cds_enable = '1' then
+                        next_state <= CDS;
+                    else
+                        next_state <= INTEGRATE;
+                    end if;
                 else
                     next_state <= RESET;
                 end if;
 
             when CDS =>
-                next_state <= INTEGRATE when cds_done_reg = '1' else CDS;
+                if cds_done_reg = '1' then
+                    next_state <= INTEGRATE;
+                else
+                    next_state <= CDS;
+                end if;
 
             when INTEGRATE =>
                 if exposure_done_reg = '1' then
-                    next_state <= SINGLE_PIXEL when read_mode = '1' else READOUT;
+                    if read_mode = '1' then
+                        next_state <= SINGLE_PIXEL;
+                    else
+                        next_state <= READOUT;
+                    end if;
                 else
                     next_state <= INTEGRATE;
                 end if;
 
             when READOUT =>
-                next_state <= RESET when done_reg = '1' else READOUT;
+                if done_reg = '1' then
+                    next_state <= RESET;
+                else
+                    next_state <= READOUT;
+                end if;
 
             when SINGLE_PIXEL =>
-                next_state <= RESET when single_done_reg = '1' else SINGLE_PIXEL;
+                if single_done_reg = '1' then
+                    next_state <= RESET;
+                else
+                    next_state <= SINGLE_PIXEL;
+                end if;
 
             when others =>
                 next_state <= IDLE;
