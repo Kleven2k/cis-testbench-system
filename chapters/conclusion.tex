@@ -1,0 +1,29 @@
+% =========================================================
+% Chapter 9 — Conclusion and Future Work
+% =========================================================
+
+\section{Conclusion}
+
+This thesis presented the design and implementation of an FPGA-based testbench system for CMOS image sensor characterisation. The system was developed on the Digilent Nexys Video development board and validated agains an 8x8 pixel prototype CIS chip produced by the Nanoelectronics group at the University of Oslo.
+
+The firmware implements a configurable sensor control FSM that sequences the sensor through reset, optional CDS, integration, and pixel readout phases, with all timing parameters adjustable via a UART register interface. Pixel data is acquired using the on-chip Xilinx XADC, stored in a frame buffer, and rendered in real time on an HDMI display. A Pythong GUI provides full remote control from a host PC.
+
+% TODO: add 2-3 sentences summarising key experimental results
+
+The system establishes a solid and reusable foundation for future CIS characterisation work in the group, reducing the effort required for each new generation of students to begin testing a new sensor chip.
+
+\section{Future Work}
+
+Several extensions would increase the capability and usability of the testbench:
+
+\begin{itemize}
+    \item \textbf{Custom adapter PCB}: a small PCB with a standardised connector would allow different sensor packages to be plugged into the system without modifying the FPGA board or firmware.
+
+    \item \textbf{External high-resolution ADC}: replacing the XADC with a dedicated external ADC would improve dynamic range, linearity, and sampling rate for more precise characterization.
+
+    \item \textbf{Automated characterisation scripts}: extending the Python host software with automated dark frame subtraction, flat-field correction, and noise analysis would reduce manual effort for standard measurements.
+
+    \item \textbf{Optics and mechanical fixture}: a 3D-printed lens mount and positioning table setupd would allow controlled optical characterisation with defined light sources and test patterns.
+
+    \item \textbf{Support for larger arrays}: the display and readout logic could be extended to handle sensors with larger pixel arrays as future chips are developed.
+\end{itemize}
