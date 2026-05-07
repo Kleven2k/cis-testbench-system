@@ -26,14 +26,17 @@ puts "============================================================"
 
 # ── IP Cores ──────────────────────────────────────────────────────────────────
 # XADC Wizard
-read_ip cis_testbench_system.srcs/sources_1/ip/xadc_wiz_0/xadc_wiz_0.xci
+read_ip hdl/ip/xadc_wiz_0/xadc_wiz_0.xci
 
 # Block RAMs (OLED char library, init sequence ROM, pixel buffer)
 read_ip hdl/rtl/display/OLED/ip/charLib/charLib.xci
 read_ip hdl/rtl/display/OLED/ip/init_sequence_rom/init_sequence_rom.xci
 read_ip hdl/rtl/display/OLED/ip/pixel_buffer/pixel_buffer.xci
 
+# Upgrade and generate all IP cores (required in non-project batch mode)
+upgrade_ip [get_ips]
 generate_target all [get_ips]
+export_ip_user_files -of_objects [get_ips] -no_script -sync -force -quiet
 
 # ── Sources — common ──────────────────────────────────────────────────────────
 read_verilog -sv hdl/rtl/common/debounce.sv

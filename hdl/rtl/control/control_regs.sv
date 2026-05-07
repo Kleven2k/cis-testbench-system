@@ -12,13 +12,8 @@ module control_regs (
     input  wire logic        dwell_down,
     input  wire logic        start_btn,
 
-    // Switch inputs (new mapping)
-    //   sw[0] = cds_enable
-    //   sw[1] = photosense_mode
-    //   sw[2] = invert_pol
+    input  wire logic        sw_read_mode,
     input  wire logic        sw_cds_enable,
-    input  wire logic        sw_photosense,
-    input  wire logic        sw_invert_pol,
 
     // UART write interface
     input  wire logic        uart_write_en,
@@ -34,35 +29,26 @@ module control_regs (
     output      logic [15:0] dwell_us,
     output      logic [7:0]  reset_us,
     output      logic [7:0]  cds_delay_us,
-    output      logic        read_mode,       // remote only
+    output      logic        read_mode,
     output      logic        cds_enable,
     output      logic        photosense_mode,
     output      logic [1:0]  disp_gain,
-    output      logic        invert_pol,
+    output      logic        invert_pol,    // REG_MODE[4]: 1 = higher ADC → brighter
     output      logic        start_pulse,
-    output      logic        soft_reset,
-    output      logic        remote_mode_out,
-
-    // Runtime grid size outputs (to sensor_ctrl)
-    output      logic [7:0]  active_cols,
-    output      logic [7:0]  active_rows
+    output      logic        soft_reset
 );
 
     // ============================================================
-    // Register File (10 x 8-bit)
+    // Register File (8 x 8-bit)
     // ============================================================
-    // 0x00  CTRL:     [7]=remote_mode [2]=cds_enable [1]=soft_reset [0]=start
-    // 0x01  EXP_LO:   exposure_us[7:0]
-    // 0x02  EXP_HI:   exposure_us[15:8]
-    // 0x03  DWELL_LO: dwell_us[7:0]
-    // 0x04  DWELL_HI: dwell_us[15:8]
-    // 0x05  MODE:     [4]=invert_pol [3:2]=disp_gain [1]=photosense [0]=read_mode
-    // 0x06  RESET_US
-    // 0x07  CDS_DELAY
-    // 0x08  ACTIVE_COLS  (1-64, runtime grid width)
-    // 0x09  ACTIVE_ROWS  (1-64, runtime grid height)
-    localparam int NREGS = 10;
-    logic [7:0] regfile [0:NREGS-1];
+    logic [7:0] regfile [0:7];
+
+    // CTRL register bits
+    // regfile[0]
+    // bit0 = start
+    // bit1 = soft reset
+    // bit2 = cds_enable
+    // bit7 = remote_mode
 
     logic remote_mode;
     assign remote_mode = regfile[0][7];
@@ -73,18 +59,17 @@ module control_regs (
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
             integer i;
-            for (i = 0; i < NREGS; i = i + 1)
+            for (i = 0; i < 8; i = i + 1)
                 regfile[i] <= 8'd0;
-            regfile[5] <= 8'h02;   // photosense_mode = 1 by default
-            regfile[8] <= 8'd8;    // active_cols = 8 by default
-            regfile[9] <= 8'd8;    // active_rows = 8 by default
+            regfile[5] <= 8'h02;  // photosense_mode = 1 by default (bit 1)
         end else begin
             if (uart_write_en) begin
-                // CTRL always writable (needed to enter remote mode)
+                // Always allow writing CTRL (needed to enable remote mode)
                 if (uart_addr == 8'h00)
                     regfile[0] <= uart_data;
-                // All others only in remote mode
-                else if (remote_mode && uart_addr < NREGS)
+
+                // Other registers only writable in remote mode
+                else if (remote_mode && uart_addr < 8)
                     regfile[uart_addr] <= uart_data;
             end
         end
@@ -94,14 +79,14 @@ module control_regs (
     // UART READ HANDLING
     // ============================================================
     always_comb begin
-        if (read_addr < NREGS)
+        if (read_addr < 8)
             read_data = regfile[read_addr];
         else
             read_data = 8'h00;
     end
 
     // ============================================================
-    // Exposure & Dwell
+    // Exposure & Dwell Configuration
     // ============================================================
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
@@ -109,15 +94,20 @@ module control_regs (
             dwell_us    <= 16'd100;
         end else begin
             if (!remote_mode) begin
+                // Manual button control
                 if (delay_up)
                     exposure_us <= exposure_us + 16'd10;
+
                 if (delay_down && exposure_us > 16'd10)
                     exposure_us <= exposure_us - 16'd10;
+
                 if (dwell_up)
                     dwell_us <= dwell_us + 16'd10;
+
                 if (dwell_down && dwell_us > 16'd10)
                     dwell_us <= dwell_us - 16'd10;
             end else begin
+                // Remote mode uses register values
                 exposure_us <= {regfile[2], regfile[1]};
                 dwell_us    <= {regfile[4], regfile[3]};
             end
@@ -125,7 +115,7 @@ module control_regs (
     end
 
     // ============================================================
-    // Reset & CDS Delay (remote only)
+    // Reset & CDS Delay Configuration
     // ============================================================
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
@@ -138,36 +128,24 @@ module control_regs (
     end
 
     // ============================================================
-    // Mode outputs
-    // Local mode: switches drive cds_enable, photosense, invert_pol
-    // Remote mode: register file is authoritative for everything
-    // read_mode is remote-only (single pixel without PC is not useful)
+    // Mode Selection
     // ============================================================
     always_comb begin
         if (remote_mode) begin
-            cds_enable      = regfile[0][2];
-            photosense_mode = regfile[5][1];
-            invert_pol      = regfile[5][4];
-            read_mode       = regfile[5][0];
+            read_mode  = regfile[5][0];
+            cds_enable = regfile[0][2];
         end else begin
-            cds_enable      = sw_cds_enable;
-            photosense_mode = sw_photosense;
-            invert_pol      = sw_invert_pol;
-            read_mode       = 1'b0;   // full-frame only without PC
+            read_mode  = sw_read_mode;
+            cds_enable = sw_cds_enable;
         end
-        // Display gain always from register (no physical switch)
-        disp_gain = regfile[5][3:2];
+        // display config always comes from register (no physical switch)
+        photosense_mode = regfile[5][1];
+        disp_gain       = regfile[5][3:2];
+        invert_pol      = regfile[5][4];
     end
 
     // ============================================================
-    // Active grid size — always from register file (remote sets it,
-    // defaults to 8x8 on reset, local mode uses the same stored value)
-    // ============================================================
-    assign active_cols = (regfile[8] == 8'd0) ? 8'd8 : regfile[8];
-    assign active_rows = (regfile[9] == 8'd0) ? 8'd8 : regfile[9];
-
-    // ============================================================
-    // Start Pulse
+    // Start Pulse Generation (Edge Detect)
     // ============================================================
     logic start_prev;
 
@@ -186,10 +164,9 @@ module control_regs (
     end
 
     // ============================================================
-    // Soft Reset & Remote Mode output
+    // Soft Reset
     // ============================================================
-    assign soft_reset      = remote_mode ? regfile[0][1] : 1'b0;
-    assign remote_mode_out = remote_mode;
+    assign soft_reset = remote_mode ? regfile[0][1] : 1'b0;
 
 endmodule
 

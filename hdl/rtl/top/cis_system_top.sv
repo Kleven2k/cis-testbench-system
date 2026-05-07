@@ -237,28 +237,32 @@ module cis_system_top #(
         .gray_out(gray_pix)
     );
 
-    // Pipeline register: break the long combinatorial path from sx/sy
-    // through simple_pixel to dvi_r. One pixel clock of latency added —
-    // invisible on screen. de/hsync/vsync delayed to match.
-    logic [3:0] gray_pix_r;
-    logic       de_r, hsync_r, vsync_r;
-    always_ff @(posedge clk_pix) begin
-        gray_pix_r <= gray_pix;
-        de_r       <= de;
-        hsync_r    <= hsync;
-        vsync_r    <= vsync;
+    // paint grayscale: use gray_pix for R, G, B
+    logic [3:0] paint_r, paint_g, paint_b;
+    always_comb begin
+        paint_r = gray_pix;
+        paint_g = gray_pix;
+        paint_b = gray_pix;
+    end
+
+    // display colour: paint colour but black in blanking interval
+    logic [3:0] display_r, display_g, display_b;
+    always_comb begin
+        display_r = (de) ? paint_r : 4'h0;
+        display_g = (de) ? paint_g : 4'h0;
+        display_b = (de) ? paint_b : 4'h0;
     end
 
     // DVI signals (8 bits per colour channel)
     logic [7:0] dvi_r, dvi_g, dvi_b;
     logic dvi_hsync, dvi_vsync, dvi_de;
     always_ff @(posedge clk_pix) begin
-        dvi_hsync <= hsync_r;
-        dvi_vsync <= vsync_r;
-        dvi_de    <= de_r;
-        dvi_r <= de_r ? {2{gray_pix_r}} : 8'h0;
-        dvi_g <= de_r ? {2{gray_pix_r}} : 8'h0;
-        dvi_b <= de_r ? {2{gray_pix_r}} : 8'h0;
+        dvi_hsync <= hsync;
+        dvi_vsync <= vsync;
+        dvi_de <= de;
+        dvi_r <= { 2{ display_r } };
+        dvi_g <= { 2{ display_g } };
+        dvi_b <= { 2{ display_b } };
     end 
 
     // TMDS encoding and serialization
@@ -395,9 +399,6 @@ module cis_system_top #(
     logic        invert_pol_final;
     logic start_combined;
     logic rst_uart;
-    logic remote_mode_wire;
-    logic [7:0] active_cols_wire;
-    logic [7:0] active_rows_wire;
 
     // 2-FF CDC: photosense_mode_final (clk_100m) → clk_pix domain
     logic photosense_sync0, photosense_sync1;
@@ -407,46 +408,34 @@ module cis_system_top #(
     end
 
     // -------------------------------------------------------------------------
-    // Auto-range: sequential min/max reduction over pixel_mem after each scan.
-    // Runs one pixel per clock cycle starting on the done pulse — takes
-    // PIXEL_COUNT cycles (~3.5 µs at 74.25 MHz) to complete, which is
-    // negligible compared to the inter-frame period.
-    // Photosense blanked positions (row+col even) are excluded from the range.
+    // Auto-range: compute min/max over all active pixels after each scan.
+    // In photosense_mode blanked pixels (row+col even) are excluded so ISFETs
+    // don't distort the range reference.
+    // Combinational reduction over pixel_mem — latched on the done pulse.
     // -------------------------------------------------------------------------
-    logic [11:0] frame_min_reg, frame_max_reg;
-    logic [$clog2(PIXEL_COUNT+1)-1:0] range_idx;
-    logic range_busy;
+    logic [11:0] frame_min_comb, frame_max_comb;
+    always_comb begin
+        frame_min_comb = 12'hFFF;
+        frame_max_comb = 12'h000;
+        for (int i = 0; i < PIXEL_COUNT; i++) begin
+            automatic int r = i / GRID_COLS;
+            automatic int c = i % GRID_COLS;
+            // Exclude blanked positions when photosense is active
+            if (!(photosense_sync1 && ((r + c) % 2 == 0))) begin
+                if (pixel_mem[i] < frame_min_comb) frame_min_comb = pixel_mem[i];
+                if (pixel_mem[i] > frame_max_comb) frame_max_comb = pixel_mem[i];
+            end
+        end
+    end
 
+    logic [11:0] frame_min_reg, frame_max_reg;
     always_ff @(posedge clk_pix or negedge btn_rst_n) begin
         if (!btn_rst_n) begin
             frame_min_reg <= 12'h000;
             frame_max_reg <= 12'hFFF;
-            range_idx     <= '0;
-            range_busy    <= 1'b0;
-        end else begin
-            if (done) begin
-                // Start sequential reduction on done pulse
-                range_busy    <= 1'b1;
-                range_idx     <= '0;
-                frame_min_reg <= 12'hFFF;
-                frame_max_reg <= 12'h000;
-            end else if (range_busy) begin
-                // Process one pixel per cycle
-                begin
-                    automatic int r = int'(range_idx) / GRID_COLS;
-                    automatic int c = int'(range_idx) % GRID_COLS;
-                    if (!(photosense_sync1 && ((r + c) % 2 == 0))) begin
-                        if (pixel_mem[range_idx] < frame_min_reg)
-                            frame_min_reg <= pixel_mem[range_idx];
-                        if (pixel_mem[range_idx] > frame_max_reg)
-                            frame_max_reg <= pixel_mem[range_idx];
-                    end
-                end
-                if (range_idx == PIXEL_COUNT - 1)
-                    range_busy <= 1'b0;
-                else
-                    range_idx <= range_idx + 1'b1;
-            end
+        end else if (done) begin
+            frame_min_reg <= frame_min_comb;
+            frame_max_reg <= frame_max_comb;
         end
     end
 
@@ -462,9 +451,6 @@ module cis_system_top #(
         .cds_enable(cds_final),
         .photosense_mode(photosense_sync1),
 
-        .active_cols(int'(active_cols_wire)),
-        .active_rows(int'(active_rows_wire)),
-
         .delay_time      (exposure_us),
         .cds_delay_us    (cds_delay_us_wire),
         .reset_us        (reset_us_wire),
@@ -472,7 +458,7 @@ module cis_system_top #(
 
         .pixel_index(pixel_index),
         .pixel_step (pixel_step),
-
+        
         .done         (done),
         .exposure_done(exposure_done),
         .cds_done     (cds_done),
@@ -483,8 +469,8 @@ module cis_system_top #(
         .AY  (AY),
         .px  (px),
         .py  (py),
-        .px_select(3'b000),   // single pixel: remote only via REG_MODE
-        .py_select(3'b000),
+        .px_select(sw[4:2]),
+        .py_select(sw[6:4]),
         .idle_state       (idle_state),
         .reset_state      (reset_state),
         .cds_state        (cds_state),
@@ -507,37 +493,16 @@ module cis_system_top #(
     // OLED Control
     //-------------------------------------------------------------------------
 
-    // FSM state flags are in clk_pix domain — 2-FF sync to clk_100m for OLED
-    logic idle_s, reset_s, cds_s, exp_s, ro_s, sp_s;
-    always_ff @(posedge clk_100m) begin
-        logic idle_s0, reset_s0, cds_s0, exp_s0, ro_s0, sp_s0;
-        idle_s0  <= idle_state;       idle_s  <= idle_s0;
-        reset_s0 <= reset_state;      reset_s <= reset_s0;
-        cds_s0   <= cds_state;        cds_s   <= cds_s0;
-        exp_s0   <= exposure_state;   exp_s   <= exp_s0;
-        ro_s0    <= readout_state;    ro_s    <= ro_s0;
-        sp_s0    <= single_pix_state; sp_s    <= sp_s0;
-    end
-
     OLED_master u_oled (
-        .clk              (clk_100m),
-        .rstn             (btn_rst_n),
-        .exposure_us      (exposure_us),
-        .dwell_us         (pixel_dwell_us),
-        .idle_state       (idle_s),
-        .reset_state      (reset_s),
-        .cds_state        (cds_s),
-        .exposure_state   (exp_s),
-        .readout_state    (ro_s),
-        .single_pix_state (sp_s),
-        .cds_enable       (cds_final),
-        .remote_mode      (remote_mode_wire),
-        .oled_sdin        (oled_sdin),
-        .oled_sclk        (oled_sclk),
-        .oled_dc          (oled_dc),
-        .oled_res         (oled_res),
-        .oled_vbat        (oled_vbat),
-        .oled_vdd         (oled_vdd)
+        .clk         (clk_100m),
+        .rstn        (btn_rst_n),
+        .exposure_us (exposure_us),
+        .oled_sdin   (oled_sdin),
+        .oled_sclk   (oled_sclk),
+        .oled_dc     (oled_dc),
+        .oled_res    (oled_res),
+        .oled_vbat   (oled_vbat),
+        .oled_vdd    (oled_vdd)
     );
 
         //-------------------------------------------------------------------------
@@ -579,15 +544,15 @@ module cis_system_top #(
     logic [7:0]  ctrl_read_data;       // from control_regs only
 
     // -------------------------------------------------------------------------
-    // Read data mux: addresses 0x00-0x09 → control registers
-    //                addresses 0x0A+     → pixel_mem (PIXEL_COUNT pixels × 2 bytes)
-    //   pixel i hi byte: addr = 0x0A + i*2     → {4'b0, pixel_mem[i][11:8]}
-    //   pixel i lo byte: addr = 0x0B + i*2     → pixel_mem[i][7:0]
+    // Read data mux: addresses 0x00-0x07 → control registers
+    //                addresses 0x08-0x87 → pixel_mem (64 pixels × 2 bytes each)
+    //   pixel i hi byte: addr = 0x08 + i*2     → {4'b0, pixel_mem[i][11:8]}
+    //   pixel i lo byte: addr = 0x09 + i*2     → pixel_mem[i][7:0]
     // -------------------------------------------------------------------------
-    // Pixel address range: 0x0A .. 0x0A + PIXEL_COUNT*2 - 1
+    // Pixel address range: 0x08 .. 0x08 + PIXEL_COUNT*2 - 1
     //   even offset = high nibble {4'b0, pixel[11:8]}
     //   odd  offset = low byte    pixel[7:0]
-    localparam int PIXEL_ADDR_LO  = 8'h0A;  // 0x00-0x09 used by control registers
+    localparam int PIXEL_ADDR_LO  = 8'h08;
     localparam int PIXEL_ADDR_HI  = PIXEL_ADDR_LO + PIXEL_COUNT * 2 - 1;
 
     logic [5:0] pix_rd_idx;
@@ -636,9 +601,8 @@ module cis_system_top #(
         .dwell_down(dwell_down_dn),
         .start_btn(start_pulse),
 
-        .sw_cds_enable  (sw[0]),
-        .sw_photosense  (sw[1]),
-        .sw_invert_pol  (sw[2]),
+        .sw_read_mode(sw[0]),
+        .sw_cds_enable(sw[1]),
 
         .uart_write_en(uart_write_en),
         .uart_addr(uart_write_addr),
@@ -656,11 +620,8 @@ module cis_system_top #(
         .photosense_mode(photosense_mode_final),
         .disp_gain   (disp_gain_final),
         .invert_pol  (invert_pol_final),
-        .start_pulse     (start_combined),
-        .soft_reset      (rst_uart),
-        .remote_mode_out (remote_mode_wire),
-        .active_cols     (active_cols_wire),
-        .active_rows     (active_rows_wire)
+        .start_pulse (start_combined),
+        .soft_reset  (rst_uart)
     );
 
 endmodule
